@@ -3,7 +3,13 @@
 /*exported XLSX */
 /*global process:false, Buffer:false, ArrayBuffer:false, DataView:false, Deno:false */
 var XLSX = {};
-XLSX.version = '0.18.5';
+XLSX.version = '0.18.5-security.1';
+/* Security: prototype pollution prevention (CVE-2023-30533) */
+var proto_keys = {"__proto__": 1, "constructor": 1, "prototype": 1};
+function sanitize_key(key) {
+	if(typeof key === "string" && Object.prototype.hasOwnProperty.call(proto_keys, key)) return "?" + key;
+	return key;
+}
 var current_codepage = 1200, current_ansi = 1252;
 
 var VALID_ANSI = [ 874, 932, 936, 949, 950, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 10000 ];
@@ -3522,8 +3528,9 @@ function resolve_path(path/*:string*/, base/*:string*/)/*:string*/ {
 	return result.join('/');
 }
 var XML_HEADER = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
-var attregexg=/([^"\s?>\/]+)\s*=\s*((?:")([^"]*)(?:")|(?:')([^']*)(?:')|([^'">\s]+))/g;
-var tagregex1=/<[\/\?]?[a-zA-Z0-9:_-]+(?:\s+[^"\s?>\/]+\s*=\s*(?:"[^"]*"|'[^']*'|[^'">\s=]+))*\s*[\/\?]?>/mg, tagregex2 = /<[^>]*>/g;
+var attregexg=/([^"\s?>\/=]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^'">\s]+))/g;
+/* Security: replaced vulnerable regex to prevent ReDoS (CVE-2024-22363) */
+var tagregex1=/<[\/\?]?[a-zA-Z0-9:_-]+(?:\s[^>]*)?\/?>/mg, tagregex2 = /<[^>]*>/g;
 var tagregex = /*#__PURE__*/XML_HEADER.match(tagregex1) ? tagregex1 : tagregex2;
 var nsregex=/<\w*:/, nsregex2 = /<(\/?)\w+:/;
 function parsexmltag(tag/*:string*/, skip_root/*:?boolean*/, skip_LC/*:?boolean*/)/*:any*/ {
@@ -3763,7 +3770,8 @@ function xlml_normalize(d)/*:string*/ {
 	throw new Error("Bad input format: expected Buffer or string");
 }
 /* UOS uses CJK in tags */
-var xlmlregex = /<(\/?)([^\s?><!\/:]*:|)([^\s?<>:\/]+)(?:[\s?:\/][^>]*)?>/mg;
+/* Security: simplified regex to prevent ReDoS (CVE-2024-22363) */
+var xlmlregex = /<(\/?)([^\s?><!\/:]*:|)([^\s?<>:\/]+)[^>]*>/mg;
 //var xlmlregex = /<(\/?)([a-z0-9]*:|)(\w+)[^>]*>/mg;
 
 var XMLNS = ({
@@ -12095,7 +12103,8 @@ var rc_to_a1 = /*#__PURE__*/(function(){
 	};
 })();
 
-var crefregex = /(^|[^._A-Z0-9])([$]?)([A-Z]{1,2}|[A-W][A-Z]{2}|X[A-E][A-Z]|XF[A-D])([$]?)(10[0-3]\d{4}|104[0-7]\d{3}|1048[0-4]\d{2}|10485[0-6]\d|104857[0-6]|[1-9]\d{0,5})(?![_.\(A-Za-z0-9])/g;
+/* Security: simplified regex to prevent ReDoS (CVE-2024-22363) */
+var crefregex = /(^|[^._A-Z0-9])([$]?)([A-Z]{1,3})([$]?)(\d{1,7})(?![_.\(A-Za-z0-9])/g;
 var a1_to_rc = /*#__PURE__*/(function(){
 	return function a1_to_rc(fstr/*:string*/, base/*:CellAddress*/) {
 		return fstr.replace(crefregex, function($0, $1, $2, $3, $4, $5) {
@@ -17518,13 +17527,13 @@ function parse_xlml_xml(d, _opts)/*:Workbook*/ {
 				if(merges.length) cursheet["!merges"] = merges;
 				if(cstys.length > 0) cursheet["!cols"] = cstys;
 				if(rowinfo.length > 0) cursheet["!rows"] = rowinfo;
-				sheets[sheetname] = cursheet;
+				sheets[sanitize_key(sheetname)] = cursheet;
 			} else {
 				refguess = {s: {r:2000000, c:2000000}, e: {r:0, c:0} };
 				r = c = 0;
 				state.push([Rn[3], false]);
 				tmp = xlml_parsexmltag(Rn[0]);
-				sheetname = unescapexml(tmp.Name);
+				sheetname = sanitize_key(unescapexml(tmp.Name));
 				cursheet = (opts.dense ? [] : {});
 				merges = [];
 				arrayf = [];
@@ -21200,7 +21209,7 @@ function parse_content_xml(d/*:string*/, _opts)/*:Workbook*/ {
 					}
 					if(merges.length) ws['!merges'] = merges;
 					if(rowinfo.length) ws["!rows"] = rowinfo;
-					sheetag.name = sheetag['名称'] || sheetag.name;
+					sheetag.name = sanitize_key(sheetag['名称'] || sheetag.name);
 					if(typeof JSON !== 'undefined') JSON.stringify(sheetag);
 					SheetNames.push(sheetag.name);
 					Sheets[sheetag.name] = ws;
@@ -23174,7 +23183,7 @@ function safe_parse_sheet(zip, path/*:string*/, relsPath/*:string*/, sheet, idx/
 			case 'dialog': _ws = parse_ds(data, path, idx, opts, sheetRels[sheet], wb, themes, styles); break;
 			default: throw new Error("Unrecognized sheet type " + stype);
 		}
-		sheets[sheet] = _ws;
+		sheets[sanitize_key(sheet)] = _ws;
 
 		/* scan rels for comments and threaded comments */
 		var tcomments = [];
@@ -24132,7 +24141,7 @@ function sheet_to_json(sheet/*:Worksheet*/, opts/*:?Sheet2JSONOpts*/) {
 					do { vv = v + "_" + (counter++); } while(header_cnt[vv]); header_cnt[v] = counter;
 					header_cnt[vv] = 1;
 				}
-				hdr[C] = vv;
+				hdr[C] = sanitize_key(vv);
 		}
 	}
 	for (R = r.s.r + offset; R <= r.e.r; ++R) {
@@ -24344,6 +24353,7 @@ function book_append_sheet(wb/*:Workbook*/, ws/*:Worksheet*/, name/*:?string*/, 
 		for(++i; i <= 0xFFFF; ++i) if(wb.SheetNames.indexOf(name = root + i) == -1) break;
 	}
 	check_ws_name(name);
+	name = sanitize_key(name);
 	if(wb.SheetNames.indexOf(name) >= 0) throw new Error("Worksheet with name |" + name + "| already exists!");
 
 	wb.SheetNames.push(name);
@@ -24552,7 +24562,7 @@ function write_json_stream(sheet/*:Worksheet*/, opts/*:?Sheet2CSVOpts*/) {
 					do { vv = v + "_" + (counter++); } while(header_cnt[vv]); header_cnt[v] = counter;
 					header_cnt[vv] = 1;
 				}
-				hdr[C] = vv;
+				hdr[C] = sanitize_key(vv);
 		}
 	}
 	R = r.s.r + offset;
